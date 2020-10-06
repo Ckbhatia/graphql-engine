@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css?family=Gudea:400,700');
+@import url('https://fonts.googleapis.com/css?family=Gudea:400,500,700');
 
 @import url('https://fonts.googleapis.com/css?family=Roboto:300,400,500,700,900');
 
@@ -1377,6 +1377,13 @@ code {
 .flexColumn {
   display: flex;
   flex-direction: column;
+}
+
+.textNoNewLine {
+  word-break: break-all;
+  hyphens: auto;
+  white-space: normal;
+  display: block;
 }
 
 /* container height subtracting top header and bottom scroll bar */

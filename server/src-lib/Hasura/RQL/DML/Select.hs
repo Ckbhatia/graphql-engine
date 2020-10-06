@@ -2,8 +2,11 @@ module Hasura.RQL.DML.Select
   ( selectP2
   , convSelectQuery
   , asSingleRowJsonResp
-  , module Hasura.RQL.DML.Select.Internal
   , runSelect
+  , selectQuerySQL
+  , selectAggregateQuerySQL
+  , connectionSelectQuerySQL
+  , module Hasura.RQL.DML.Select.Internal
   )
 where
 
@@ -36,7 +39,7 @@ convSelCol fieldInfoMap _ (SCExtRel rn malias selQ) = do
   let pgWhenRelErr = "only relationships can be expanded"
   relInfo <- withPathK "name" $
     askRelType fieldInfoMap rn pgWhenRelErr
-  let (RelInfo _ _ _ relTab _) = relInfo
+  let (RelInfo _ _ _ relTab _ _) = relInfo
   (rfim, rspi) <- fetchRelDet rn relTab
   resolvedSelQ <- resolveStar rfim rspi selQ
   return [ECRel rn malias resolvedSelQ]
@@ -125,7 +128,7 @@ convOrderByElem sessVarBldr (flds, spi) = \case
         [ fldName <<> " is a"
         , " computed field and can't be used in 'order_by'"
         ]
-      -- TODO Rakesh
+      -- TODO Rakesh (from master)
       FIRemoteRelationship {} ->
         throw400 UnexpectedPayload (mconcat [ fldName <<> " is a remote field" ])
   OCRel fldName rest -> do
@@ -154,13 +157,14 @@ convOrderByElem sessVarBldr (flds, spi) = \case
 
 convSelectQ
   :: (UserInfoM m, QErrM m, CacheRM m, HasSQLGenCtx m)
-  => FieldInfoMap FieldInfo  -- Table information of current table
+  => QualifiedTable
+  -> FieldInfoMap FieldInfo  -- Table information of current table
   -> SelPermInfo   -- Additional select permission info
   -> SelectQExt     -- Given Select Query
   -> SessVarBldr m
   -> (PGColumnType -> Value -> m S.SQLExp)
   -> m AnnSimpleSel
-convSelectQ fieldInfoMap selPermInfo selQ sessVarBldr prepValBldr = do
+convSelectQ table fieldInfoMap selPermInfo selQ sessVarBldr prepValBldr = do
 
   annFlds <- withPathK "columns" $
     indexedForM (sqColumns selQ) $ \case
@@ -173,8 +177,6 @@ convSelectQ fieldInfoMap selPermInfo selQ sessVarBldr prepValBldr = do
       return ( fromRel $ fromMaybe relName mAlias
              , either AFObjectRelation AFArrayRelation annRel
              )
-
-  -- let spiT = spiTable selPermInfo
 
   -- Convert where clause
   wClause <- forM (sqWhere selQ) $ \be ->
@@ -194,7 +196,7 @@ convSelectQ fieldInfoMap selPermInfo selQ sessVarBldr prepValBldr = do
   resolvedSelFltr <- convAnnBoolExpPartialSQL sessVarBldr $
                      spiFilter selPermInfo
 
-  let tabFrom = FromTable $ spiTable selPermInfo
+  let tabFrom = FromTable table
       tabPerm = TablePerm resolvedSelFltr mPermLimit
       tabArgs = SelectArgs wClause annOrdByM mQueryLimit
                 (S.intToSQLExp <$> mQueryOffset) Nothing
@@ -232,13 +234,14 @@ convExtRel fieldInfoMap relName mAlias selQ sessVarBldr prepValBldr = do
   -- Point to the name key
   relInfo <- withPathK "name" $
     askRelType fieldInfoMap relName pgWhenRelErr
-  let (RelInfo _ relTy colMapping relTab _) = relInfo
+  let (RelInfo _ relTy colMapping relTab _ _) = relInfo
   (relCIM, relSPI) <- fetchRelDet relName relTab
-  annSel <- convSelectQ relCIM relSPI selQ sessVarBldr prepValBldr
+  annSel <- convSelectQ relTab relCIM relSPI selQ sessVarBldr prepValBldr
   case relTy of
     ObjRel -> do
       when misused $ throw400 UnexpectedPayload objRelMisuseMsg
-      return $ Left $ AnnRelationSelectG (fromMaybe relName mAlias) colMapping annSel
+      return $ Left $ AnnRelationSelectG (fromMaybe relName mAlias) colMapping $
+        AnnObjectSelectG (_asnFields annSel) relTab $ _tpFilter $ _asnPerm annSel
     ArrRel ->
       return $ Right $ ASSimple $ AnnRelationSelectG (fromMaybe relName mAlias)
                colMapping annSel
@@ -268,7 +271,7 @@ convSelectQuery sessVarBldr prepArgBuilder (DMLQuery qt selQ) = do
   let fieldInfo = _tciFieldInfoMap $ _tiCoreInfo tabInfo
   extSelQ <- resolveStar fieldInfo selPermInfo selQ
   validateHeaders $ spiRequiredHeaders selPermInfo
-  convSelectQ fieldInfo selPermInfo extSelQ sessVarBldr prepArgBuilder
+  convSelectQ qt fieldInfo selPermInfo extSelQ sessVarBldr prepArgBuilder
 
 selectP2 :: JsonAggSelect -> (AnnSimpleSel, DS.Seq Q.PrepArg) -> Q.TxE QErr EncJSON
 selectP2 jsonAggSelect (sel, p) =
@@ -277,13 +280,17 @@ selectP2 jsonAggSelect (sel, p) =
   where
     selectSQL = toSQL $ mkSQLSelect jsonAggSelect sel
 
--- selectQuerySQL :: JsonAggSelect -> AnnSimpleSel -> Q.Query
--- selectQuerySQL jsonAggSelect sel =
---   Q.fromBuilder $ toSQL $ mkSQLSelect jsonAggSelect sel
+selectQuerySQL :: JsonAggSelect -> AnnSimpleSel -> Q.Query
+selectQuerySQL jsonAggSelect sel =
+  Q.fromBuilder $ toSQL $ mkSQLSelect jsonAggSelect sel
 
--- selectAggQuerySQL :: AnnAggregateSelect -> Q.Query
--- selectAggQuerySQL =
---   Q.fromBuilder . toSQL . mkAggregateSelect
+selectAggregateQuerySQL :: AnnAggregateSelect -> Q.Query
+selectAggregateQuerySQL =
+  Q.fromBuilder . toSQL . mkAggregateSelect
+
+connectionSelectQuerySQL :: ConnectionSelect S.SQLExp -> Q.Query
+connectionSelectQuerySQL =
+  Q.fromBuilder . toSQL . mkConnectionSelect
 
 asSingleRowJsonResp :: Q.Query -> [Q.PrepArg] -> Q.TxE QErr EncJSON
 asSingleRowJsonResp query args =

@@ -10,20 +10,15 @@ import { getAdminSecret } from '../ApiExplorer/ApiRequest/utils';
 import styles from '../../Common/TableCommon/Table.scss';
 
 interface Metadata {
-  inconsistentObjects: object[];
+  inconsistentObjects: Record<string, unknown>[];
 }
 
 type SidebarProps = {
-  location: RouteComponentProps<{}, {}>['location'];
+  location: RouteComponentProps<unknown, unknown>['location'];
   metadata: Metadata;
 };
 
-type SectionDataKey =
-  | 'actions'
-  | 'status'
-  | 'allowed-queries'
-  | 'logout'
-  | 'about';
+type SectionDataKey = 'actions' | 'status' | 'allow-list' | 'logout' | 'about';
 
 interface SectionData {
   key: SectionDataKey;
@@ -58,10 +53,10 @@ const Sidebar: React.FC<SidebarProps> = ({ location, metadata }) => {
   });
 
   sectionsData.push({
-    key: 'allowed-queries',
-    link: '/settings/allowed-queries',
-    dataTestVal: 'allowed-queries-link',
-    title: 'Allowed Queries',
+    key: 'allow-list',
+    link: '/settings/allow-list',
+    dataTestVal: 'allow-list-link',
+    title: 'Allow List',
   });
 
   const adminSecret = getAdminSecret();

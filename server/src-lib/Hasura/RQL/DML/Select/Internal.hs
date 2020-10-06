@@ -6,6 +6,7 @@ module Hasura.RQL.DML.Select.Internal
   )
 where
 
+import           Instances.TH.Lift           ()
 import           Control.Lens                 hiding (op)
 import           Control.Monad.Writer.Strict
 
@@ -13,7 +14,7 @@ import qualified Data.HashMap.Strict          as HM
 import qualified Data.List.NonEmpty           as NE
 import qualified Data.Text                    as T
 
-import           Hasura.GraphQL.Resolve.Types
+import           Hasura.GraphQL.Schema.Common
 import           Hasura.Prelude
 import           Hasura.RQL.DML.Internal
 import           Hasura.RQL.DML.Select.Types
@@ -634,15 +635,14 @@ processOrderByItems sourcePrefix' fieldAlias' similarArrayFields orderByItems = 
           S.mkQIdenExp (mkBaseTableAlias sourcePrefix) $ toIden $ pgiColumn pgColInfo
 
         AOCObjectRelation relInfo relFilter rest -> withWriteObjectRelation $ do
-          let RelInfo relName _ colMapping relTable _ = relInfo
+          let RelInfo relName _ colMapping relTable _ _ = relInfo
               relSourcePrefix = mkObjectRelationTableAlias sourcePrefix relName
               fieldName = mkOrderByFieldName relName
           (relOrderByAlias, relOrdByExp) <-
             processAnnOrderByElement relSourcePrefix fieldName rest
-          let selectSource = SelectSource relSourcePrefix
-                             (S.FISimple relTable Nothing) Nothing
+          let selectSource = ObjectSelectSource relSourcePrefix
+                             (S.FISimple relTable Nothing)
                              (toSQLBoolExp (S.QualTable relTable) relFilter)
-                             Nothing Nothing Nothing
               relSource = ObjectRelationSource relName colMapping selectSource
           pure ( relSource
                , HM.singleton relOrderByAlias relOrdByExp
@@ -650,7 +650,7 @@ processOrderByItems sourcePrefix' fieldAlias' similarArrayFields orderByItems = 
                )
 
         AOCArrayAggregation relInfo relFilter aggOrderBy -> withWriteArrayRelation $ do
-          let RelInfo relName _ colMapping relTable _ = relInfo
+          let RelInfo relName _ colMapping relTable _ _ = relInfo
               fieldName = mkOrderByFieldName relName
               relSourcePrefix = mkArrayRelationSourcePrefix sourcePrefix fieldAlias
                                 similarArrayFields fieldName
@@ -740,13 +740,17 @@ processAnnFields sourcePrefix fieldAlias similarArrFields annFields = do
       AFRemote _ -> pure $ S.SELit "null: remote field selected"
 
       AFObjectRelation objSel -> withWriteObjectRelation $ do
-        let AnnRelationSelectG relName relMapping annSel = objSel
+        let AnnRelationSelectG relName relMapping annObjSel = objSel
+            AnnObjectSelectG objAnnFields tableFrom tableFilter = annObjSel
             objRelSourcePrefix = mkObjectRelationTableAlias sourcePrefix relName
-        (selectSource, extractors) <- processAnnSimpleSelect (mkSourcePrefixes objRelSourcePrefix)
-                                      fieldName PLSQNotRequired annSel
-        let objRelSource = ObjectRelationSource relName relMapping selectSource
+            sourcePrefixes = mkSourcePrefixes objRelSourcePrefix
+        annFieldsExtr <- processAnnFields (_pfThis sourcePrefixes) fieldName HM.empty objAnnFields
+        let selectSource = ObjectSelectSource (_pfThis sourcePrefixes)
+                           (S.FISimple tableFrom Nothing)
+                           (toSQLBoolExp (S.QualTable tableFrom) tableFilter)
+            objRelSource = ObjectRelationSource relName relMapping selectSource
         pure ( objRelSource
-             , extractors
+             , HM.fromList [annFieldsExtr]
              , S.mkQIdenExp objRelSourcePrefix fieldName
              )
 
@@ -875,8 +879,9 @@ generateSQLSelect joinCondition selectSource selectNode =
     objectRelationToFromItem
       :: (ObjectRelationSource, SelectNode) -> S.FromItem
     objectRelationToFromItem (objectRelationSource, node) =
-      let ObjectRelationSource _ colMapping source = objectRelationSource
-          alias = S.Alias $ _ssPrefix source
+      let ObjectRelationSource _ colMapping objectSelectSource = objectRelationSource
+          alias = S.Alias $ _ossPrefix objectSelectSource
+          source = objectSelectSourceToSelectSource objectSelectSource
           select = generateSQLSelect (mkJoinCond baseSelectAlias colMapping) source node
       in S.mkLateralFromItem select alias
 

@@ -454,3 +454,71 @@ class TestActionsMetadata:
 
     def test_recreate_permission(self, hge_ctx):
         check_query_f(hge_ctx, self.dir() + '/recreate_permission.yaml')
+
+    def test_create_with_headers(self, hge_ctx):
+        check_query_f(hge_ctx, self.dir() + '/create_with_headers.yaml')
+
+# Test case for bug reported at https://github.com/hasura/graphql-engine/issues/5166
+@pytest.mark.usefixtures('per_class_tests_db_state')
+class TestActionIntrospection:
+
+    @classmethod
+    def dir(cls):
+        return 'queries/actions/introspection'
+
+    def test_introspection_query(self, hge_ctx):
+        conf = get_conf_f(self.dir() + '/introspection_query.yaml')
+        headers = {}
+        admin_secret = hge_ctx.hge_key
+        if admin_secret:
+            headers['X-Hasura-Admin-Secret'] = admin_secret
+        code, resp, _ = hge_ctx.anyq(conf['url'], conf['query'], headers)
+        assert code == 200, resp
+        assert 'data' in resp, resp
+
+@use_action_fixtures
+class TestActionTimeout:
+
+    @classmethod
+    def dir(cls):
+        return 'queries/actions/timeout'
+
+    def test_action_timeout_fail(self, hge_ctx):
+        graphql_mutation = '''
+        mutation {
+          create_user(email: "random-email", name: "Clarke")
+        }
+        '''
+        query = {
+            'query': graphql_mutation,
+            'variables': {}
+        }
+        status, resp, _ = hge_ctx.anyq('/v1/graphql', query, mk_headers_with_secret(hge_ctx))
+        assert status == 200, resp
+        assert 'data' in resp
+        action_id = resp['data']['create_user']
+        query_async = '''
+        query ($action_id: uuid!){
+          create_user(id: $action_id){
+            id
+            errors
+          }
+        }
+        '''
+        query = {
+            'query': query_async,
+            'variables': {
+                'action_id': action_id
+            }
+        }
+        conf = {
+            'url': '/v1/graphql',
+            'headers': {},
+            'query': query,
+            'status': 200,
+        }
+        # the action takes 2 seconds to complete
+        time.sleep(4)
+        response, _ = check_query(hge_ctx, conf)
+        assert 'errors' in response['data']['create_user']
+        assert 'ResponseTimeout' == response['data']['create_user']['errors']['internal']['error']['message']
